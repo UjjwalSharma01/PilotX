@@ -1,3 +1,15 @@
+### Functional Requirements
+- Match incoming delivery orders to nearest available drivers
+- Handle real-time GPS location updates (every 3-5 seconds)
+- Manage driver availability changes dynamically
+- Process equidistant driver scenarios fairly
+
+### Non-Functional Requirements
+- **Latency**: <5 seconds average matching time
+- **Throughput**: Support 1000+ orders per minute at peak
+- **Availability**: 99.9% uptime with graceful degradation
+- **Consistency**: Eventual consistency acceptable for location data
+
 ## Summary
 In this solution i have comprehensively tackled all the possible edge cases and scenarios for a real-time driver matching system, to achieve optimal performance, fairness, reliability, and scalability. The architecture leverages a hybrid approach using Redis for low-latency operations and MongoDB for durable storage, ensuring both speed and data integrity.
 
@@ -11,21 +23,6 @@ Issues addressed:
 ## Pseudocode Implementation
 
 See algorithm implementation: [`question2-code/pseudocode.js`](./question2-code/pseudocode.js)
-
-
-## Problem Statement & Requirements
-
-### Functional Requirements
-- Match incoming delivery orders to nearest available drivers
-- Handle real-time GPS location updates (every 3-5 seconds)
-- Manage driver availability changes dynamically
-- Process equidistant driver scenarios fairly
-
-### Non-Functional Requirements
-- **Latency**: <5 seconds average matching time
-- **Throughput**: Support 1000+ orders per minute at peak
-- **Availability**: 99.9% uptime with graceful degradation
-- **Consistency**: Eventual consistency acceptable for location data
 
 ## Architecture Overview
 

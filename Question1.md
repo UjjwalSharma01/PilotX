@@ -1,3 +1,17 @@
+### Functional Requirements
+- **Multi-Platform Order Import**: Support order data from Shopify, WooCommerce, and other e-commerce platforms
+- **Universal API Endpoint**: Single POST /import-orders endpoint handling diverse platform formats
+- **Data Standardization**: Transform platform-specific schemas into unified internal format
+- **Idempotency Handling**: Prevent duplicate order processing when same order sent multiple times
+- **Real-Time Processing**: Process incoming orders immediately upon receipt
+
+### Non-Functional Requirements
+- **Scalability**: Handle 10,000+ orders per hour scaling requirement
+- **Performance**: Sub-second response times for order import requests
+- **Reliability**: Zero duplicate orders, robust error handling
+- **Availability**: High uptime for continuous order processing
+- **Data Integrity**: Accurate transformation across different platform schemas
+
 ## Solution Overview:
 
 Microservices-based architecture, to distribute the workload and isolate failures, along with comprehensive fallback mechanisms, ensuring higher customer satisfaction and system reliability.
@@ -8,6 +22,8 @@ Revenue Protection: 99.99% uptime during minor outages and minimal loss during m
 Customer Satisfaction: Sub-second response times with real-time updates
 Operational Efficiency: 70% cost reduction compared to traditional message broker solutions
 Scalability: Linear scaling from 1K to 100K+ orders/hour
+
+
 
 ## Overall Architecture:
 
