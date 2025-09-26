@@ -18,43 +18,94 @@ Microservices-based architecture, to distribute the workload and isolate failure
 
 ## Business Impact:
 
-Revenue Protection: 99.99% uptime during minor outages and minimal loss during major outages
-Customer Satisfaction: Sub-second response times with real-time updates
-Operational Efficiency: 70% cost reduction compared to traditional message broker solutions
-Scalability: Linear scaling from 1K to 100K+ orders/hour
+Revenue Protection: High availability during service outages with graceful degradation
+Customer Satisfaction: Fast response times with real-time order updates
+Operational Efficiency: Cost-effective compared to traditional message broker solutions
+Scalability: Linear scaling as order volume grows
 
 
 
 ## Overall Architecture:
+![Question 1 Architecture Diagram](./images/Question1.png)
+
+## System Flow
+
+The order import system processes incoming webhooks from multiple e-commerce platforms through a standardized pipeline:
+
+### Core Processing Steps
+
+**Step 1: Webhook Reception**
+E-commerce platforms (Shopify, WooCommerce, BigCommerce) send order data via webhook POST requests to our unified `/import-orders` endpoint.
+
+**Step 2: Request Validation** 
+API Gateway validates incoming requests, handles authentication, and applies rate limiting before forwarding to Order Service.
+
+**Step 3: Idempotency Check**
+Order Service generates composite key (`platform_store_uid_platform_order_id`) and checks Redis for duplicate processing. Returns cached response if order already processed.
+
+**Step 4: Data Transformation**
+Platform-specific adapters convert incoming order data to our universal schema format, standardizing fields across different e-commerce platforms.
+
+**Step 5: Order Persistence**
+Validated and transformed order data gets stored in MongoDB with proper indexing for fast retrieval and reporting.
+
+**Step 6: Partner Assignment**
+Order Service triggers Partner Service asynchronously to assign delivery partners based on location, capacity, and business rules.
+
+**Step 7: Event Notification**
+Order Service sends HTTP POST to Dashboard Service via persistent HTTP connections with order status updates and partner assignment information.
+
+**Step 8: Real-time Updates**
+Dashboard Service pushes live updates to web dashboard via WebSocket connections, keeping users informed of order status changes.
+
+### Background Operations
+
+**Duplicate Prevention**: Redis maintains 1-hour cache of processed orders with MongoDB constraints as backup for reliability.
+
+**Cache Optimization**: Stores only composite keys and status (50 bytes per order) in Redis for memory efficiency while keeping detailed data in MongoDB.
+
+### Error Handling & Recovery
+
+**Redis Failure**: System falls back to MongoDB duplicate checking with slight performance impact (50ms vs 10ms).
+
+**Partner Service Delays**: Orders queue for background processing with customer notifications rather than failing requests.
+
+**Platform Webhook Failures**: Exponential backoff retry with platform-specific rate limiting to handle delivery issues.
+
+**Database Outages**: Orders temporarily queue in Redis during short outages, with 5-minute recovery window for automatic processing.
+
+The complete pipeline typically processes orders within 100-200ms, supporting 10,000+ orders per hour through horizontal scaling of Order Service instances.
+
 
 
 ## Technical Implementation Details:
 ### 1. Universal Data Schema Design
  - An __adapter pattern__ to standardize data from various sources into a common format for easy handling and processing for each platform.
 
-__Alternative Considered:__
- - Custom parsers for each data source, which would have increased complexity and maintenance overhead.
- - Schema-less JSON storage, it makes querying hard and less efficient. along with data validation and integrity issues.
- - Forcing all platforms to conform to a single schema, which is impractical given the diversity of data sources.
+**Why not other approaches?**
+I considered a few different ways to handle this:
+- Writing separate parsers for each platform - but that would mean maintaining tons of different code as we add more platforms
+- Just storing everything as raw JSON - but then querying becomes a nightmare and you lose data validation
+- Making all platforms send data in our format - not realistic since we can't control external platforms
 __Implementation__
 
 See implementation in: [`question1-code/adapters.js`](./question1-code/adapters.js)
 
-The implementation includes:
-- Adapter classes with proper error handling
-- Factory pattern for adapter selection
-- Input validation and data transformation
-- Comprehensive error management
+What I built:
+- Separate adapter class for each platform (Shopify, WooCommerce)
+- Factory that automatically picks the right adapter
+- Input validation to catch bad data early
+- Error handling so one bad order doesn't crash the system
 
 __Data Schema & Output Examples__
 
 See standardized data schema and examples in: [`question1-code/order_schema.js`](./question1-code/order_schema.js)
 
-The schema includes:
-- Consistent field naming across all platforms
-- Comprehensive customer and order data
-- Platform-specific data preservation
-- Proper data validation structure  
+The unified schema gives us:
+- Same field names whether it's Shopify or WooCommerce data
+- All customer and order info in one consistent format
+- Original platform data preserved for debugging
+- Built-in validation to catch data issues  
 
 
 
@@ -64,18 +115,15 @@ Using Composite Redis Key with Database Constraint Backup
 
 platform + store_uid + platform_order_id = Unique Identifier
 
-__Alternative Approaches Evaluated:__
-
-| Approach | Latency | Memory | Reliability | Cost |
-|----------|---------|---------|-------------|------|
-| Database Only | 50-100ms | Low | High | Low |
-| Redis Only | 5-10ms | High | Medium | Medium |
-| **Hybrid** | **10ms** | **Low** | **High** | **Low** |
-| UUID Generation | 15ms | Medium | High | Medium |
+**Other approaches I looked at:**
+- **Database only**: Reliable but slower (50-100ms per check)
+- **Redis only**: Super fast but if Redis goes down, we might process duplicates  
+- **UUID generation**: Works but doesn't use the actual order data, so same order could get different UUIDs
+- **Hybrid approach** (what I chose): Fast Redis checks with database backup for reliability
 
 __Implementation:__
 ```js
-// Redis Key Format: order_dedup:platform_store_platform_order_id
+// Redis Key Format: order_dedup:platform_store_uid_platform_order_id
 const idempotencyKey = `order_dedup:${platform}_${store_uid}_${platform_order_id}`;
 
 // Fast Redis check (10ms average)
@@ -104,12 +152,11 @@ __Design Decision:__ Microservices with Event-Driven Communication
 
 
 
-| Architecture | 10K orders/hr | 50K orders/hr | 100K orders/hr | Infrastructure Cost |
-|--------------|---------------|---------------|----------------|-------------------|
-| Monolithic | Supported | Failed | Failed | $200/month |
-| **Microservices** | **Supported** | **Supported** | **Supported** | **$450/month** |
-| Serverless | Supported | Supported | Cold Start Issues | $650/month |
-| Message Queue Only | Supported | Supported | Supported | $800/month |
+**Architecture options I considered:**
+- **Monolithic**: Simple to start but becomes a bottleneck as we scale
+- **Microservices**: More complex but allows independent scaling of different parts
+- **Serverless**: Good for spiky traffic but cold starts can be problematic
+- **Message Queue Heavy**: Very reliable but adds operational complexity and cost
 
 
 
@@ -125,46 +172,37 @@ __Service Isolation Strategy:__
 - **Scaling**: Vertical (larger instances with more memory)
 - **Resource Profile**: Low CPU, High Memory (connection state)
 
-__Inter-Service Communication Analysis:__
-
-| Communication Method | Latency | Infrastructure Cost | Operational Complexity | Failure Handling |
-|---------------------|---------|-------------------|----------------------|------------------|
-| Direct HTTP | 1-3ms | $0 | Low | Simple retry |
-| **Message Broker** | **0.1-0.5ms** | **$200-400/month** | **High** | **Complex dead letter queues** |
-
-**Decision**: **HTTP for cost efficiency at acceptable latency trade-off**
-
-**Rationale**: 
-- 2ms latency difference acceptable for our use case
-- Saves $200-400/month in infrastructure costs
-- Simpler operational overhead and debugging
-- Easier failure recovery with basic retry logic
+**For service communication, I chose HTTP over message queues because:**
+- The latency difference (1-3ms vs 0.5ms) doesn't matter for our use case
+- HTTP is much simpler to debug and operate
+- No need to manage broker infrastructure and dead letter queues
+- Basic retry logic is sufficient for our reliability needs
 
 
 ### 4. Advanced Resilience Patterns
 __Problem Statement:__ Service failures should not cascade or result in data loss
 
-**Hybrid Resilience Approach**: Instead of rejecting requests during outages, we provide graceful degradation with customer choice.
+**Resilience Strategy**: Instead of failing orders during outages, we give customers options and keep processing what we can.
 
 **Implementation**: [`question1-code/resilience_patterns.js`](./question1-code/resilience_patterns.js)
 
-**Strategy Overview:**
-- **Phase 1 (0-30 seconds)**: Attempt partner assignment with timeout
-- **Phase 2 (Assignment Delayed)**: Queue order, offer customer choice to wait or cancel
-- **Phase 3 (Extended Attempt)**: If customer waits, try partner assignment for 60 more seconds
-- **Phase 4 (Final Choice)**: If still fails, offer background processing or cancel
-- **Phase 5 (Background)**: Process in background with notifications when partner assigned
+**How it works:**
+- **First 30 seconds**: Try to assign a delivery partner normally
+- **If delayed**: Queue the order and let customer choose to wait or cancel
+- **Extended attempt**: If customer waits, keep trying for another 60 seconds  
+- **Still no partner**: Offer to process in background or cancel the order
+- **Background mode**: Keep looking for partners and notify customer when found
 
-**Customer Experience During Partner Assignment Delays:**
-- **30-second timer**: "Finding delivery partner..."
-- **Assignment delayed**: "Partner assignment taking longer than usual"
-- **Customer choice 1**: "Wait 1 more minute - we'll keep trying to assign partner" OR "Cancel order"
-- **If extended attempt fails**: "Process order in background - we'll notify when partner assigned" OR "Cancel order"
-- **Background processing**: Continuous partner assignment attempts with proactive notifications
+**What customers see:**
+- **First 30 seconds**: "Finding delivery partner..."
+- **If delayed**: "Taking longer than usual to find a partner"
+- **Customer choice**: "Wait 1 more minute?" OR "Cancel order"
+- **Still no luck**: "Process in background and we'll notify you?" OR "Cancel order"
+- **Background mode**: Keep trying to find partners and update customer when we do
 
-**Traditional vs Enhanced Approach:**
-- **Traditional**: Simply reject requests during outages
-- **Enhanced**: Provide customer value even during failures with graceful degradation
+**Our approach vs typical systems:**
+- **Typical**: Just reject orders when partner service is down
+- **Our way**: Keep processing orders and give customers choices during delays
 
 
 
@@ -179,7 +217,7 @@ __Identified Risks & Mitigation Strategies__
 ### 2. Redis Cache Failure (Medium Impact, Low Probability)
 - **Risk**: Duplicate orders during cache rebuild
 - **Mitigation**: Database constraint as secondary check + immediate cache warming
-- **Impact**: 10% performance degradation for 2-3 minutes
+- **Impact**: Response times increase from 10ms to 50ms during fallback period
 
 ### 3. Partner Service Extended Outage (Low Impact, Medium Probability)
 - **Risk**: All orders assigned to default partners
@@ -189,29 +227,3 @@ __Identified Risks & Mitigation Strategies__
 ### 4. API Rate Limiting from E-commerce Platforms
 - **Risk**: Webhook delivery failures
 - **Mitigation**: Exponential backoff retry + platform-specific rate limiting + status page integration
-
-
-## Conclusion
-
-This multi-platform order import system addresses Pilot X's core requirements while implementing production-ready resilience patterns. The solution prioritizes reliability and cost-effectiveness while maintaining clear scaling paths as business volume grows.
-
-**Key Technical Solutions:**
-- **Universal Data Adapters**: Standardizes diverse e-commerce platform data using adapter pattern with factory selection
-- **Hybrid Idempotency Strategy**: Redis-first duplicate prevention with database constraint backup (10ms latency, high reliability)
-- **Advanced Resilience Patterns**: Progressive partner assignment with customer choice during delays (30s → 60s → background processing)
-- **Microservices Architecture**: HTTP-based inter-service communication for cost efficiency at acceptable latency trade-off
-
-**Measurable Outcomes:**
-- **99.99% System Availability**: Maintains operations during partner service outages with graceful degradation
-- **10ms Idempotency Check**: Fast duplicate prevention with Redis, database fallback for reliability
-- **$450/month Infrastructure Cost**: Microservices approach supporting 100K+ orders/hour
-- **Zero Order Loss**: Multiple fallback layers (Redis queue → background processing) prevent data loss
-- **Progressive Customer Experience**: Clear choices during delays instead of complete rejection
-
-**Business Impact Delivered:**
-- **Revenue Protection**: 99.99% uptime during minor outages, minimal loss during major outages
-- **Customer Satisfaction**: Sub-second response times with transparent partner assignment process
-- **Operational Efficiency**: 70% cost reduction compared to traditional message broker solutions
-- **Linear Scalability**: Proven scaling from 1K to 100K+ orders/hour
-
-This architecture provides Pilot X with a foundation for growth from current requirements to enterprise-scale operations while maintaining optimal user experience and operational reliability through intelligent failure handling.
